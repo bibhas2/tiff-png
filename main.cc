@@ -21,7 +21,7 @@ static bool save_tiff_as_png(TIFF* tif, const char* png_filename)
     FILE* fp = nullptr;
     png_structp png_ptr = nullptr;
     png_infop info_ptr = nullptr;
-    std::vector<png_bytep> row_pointers;
+    png_bytep row = nullptr;
 
     try
     {
@@ -63,42 +63,31 @@ static bool save_tiff_as_png(TIFF* tif, const char* png_filename)
                      PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
         png_write_info(png_ptr, info_ptr);
 
-        // Create row buffer and write rows
-        row_pointers.resize(height);
+        // Allocate a single row buffer and write rows one by one
+        row = (png_bytep)malloc((size_t)width * 4);
+        if (!row)
+            throw std::runtime_error("Failed to allocate row buffer");
 
         for (uint32_t y = 0; y < height; ++y)
         {
-            png_bytep row = (png_bytep)malloc((size_t)width * 4);
-            if (!row)
-                throw std::runtime_error("Failed to allocate row buffer");
-
             for (uint32_t x = 0; x < width; ++x)
             {
                 uint32_t px = raster[(size_t)y * width + x];
 
                 // TIFFReadRGBAImage returns data in host byte order as 0xAARRGGBB on most systems.
-                uint8_t r = (uint8_t)((px >> 16) & 0xFF);
-                uint8_t g = (uint8_t)((px >> 8) & 0xFF);
-                uint8_t b = (uint8_t)(px & 0xFF);
-                uint8_t a = (uint8_t)((px >> 24) & 0xFF);
-
-                png_bytep ptr = row + x * 4;
-                ptr[0] = r;
-                ptr[1] = g;
-                ptr[2] = b;
-                ptr[3] = a;
+                row[x * 4 + 0] = (uint8_t)((px >> 16) & 0xFF); // R
+                row[x * 4 + 1] = (uint8_t)((px >> 8) & 0xFF);  // G
+                row[x * 4 + 2] = (uint8_t)(px & 0xFF);         // B
+                row[x * 4 + 3] = (uint8_t)((px >> 24) & 0xFF); // A
             }
 
-            row_pointers[y] = row;
+            png_write_row(png_ptr, row);
         }
 
-        png_write_image(png_ptr, row_pointers.data());
         png_write_end(png_ptr, info_ptr);
 
         // Normal cleanup
-        for (uint32_t y = 0; y < height; ++y)
-            free(row_pointers[y]);
-
+        free(row);
         png_destroy_write_struct(&png_ptr, &info_ptr);
         fclose(fp);
         _TIFFfree(raster);
@@ -108,8 +97,7 @@ static bool save_tiff_as_png(TIFF* tif, const char* png_filename)
     catch (...)
     {
         // Unified cleanup on error
-        for (size_t y = 0; y < row_pointers.size(); ++y)
-            if (row_pointers[y]) free(row_pointers[y]);
+        if (row) free(row);
 
         if (png_ptr)
             png_destroy_write_struct(&png_ptr, info_ptr ? &info_ptr : (png_infopp)NULL);
@@ -160,6 +148,6 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    std::cout << "Wrote PNG: " << output_file << std::endl;
+    std::cout << "Saved PNG file: " << output_file << std::endl;
     return 0;
 }
