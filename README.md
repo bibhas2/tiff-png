@@ -24,3 +24,10 @@ Compile the code.
 g++ -o tiff-png main.cc -ltiff -lpng
 ```
 
+## Running
+
+```
+./tiff-png file1.tiff file2.tiff ...
+```
+
+This will create file1.png, file2.png etc.
