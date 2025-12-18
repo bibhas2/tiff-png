@@ -102,26 +102,15 @@ static void save_tiff_as_png(TIFF *tif, const char *png_filename)
     png_write_end(res.png_ptr, res.info_ptr);
 }
 
-int main(int argc, char *argv[])
+bool convert_file(const char *tiff_file)
 {
-    // Get the TIFF file name from argument
-    if (argc < 2)
-    {
-        std::cout << "Usage: " << argv[0] << " <tiff_file>" << std::endl;
-
-        return 1;
-    }
-
-    const char *tiff_file = argv[1];
-
-    // 1. Open TIFF file
     TIFF *tif = TIFFOpen(tiff_file, "r");
 
     if (!tif)
     {
         std::cout << "Error: Could not open TIFF file" << std::endl;
 
-        return 1;
+        return false;
     }
 
     // Replace the extension of the TIFF file name with .png for output
@@ -133,19 +122,43 @@ int main(int argc, char *argv[])
     else
         output_file += ".png";
 
-    int result = 0;
+    bool result = false;
 
     try {
         save_tiff_as_png(tif, output_file.c_str());
+
+        result = true;
     }
     catch (const std::exception &e)
     {
         std::cout << "Failed to convert TIFF to PNG: " << e.what() << std::endl;
-
-        result = 1;
     }
 
     TIFFClose(tif);
 
     return result;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2)
+    {
+        std::cout << "Usage: " << argv[0] << " TIFF_FILE1 TIFF_FILE2 ..." << std::endl;
+
+        return 1;
+    }
+
+    int exit_code = 0;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!convert_file(argv[i]))
+        {
+            std::cerr << "Failed to convert: " << argv[i] << std::endl;
+            
+            exit_code = 1;
+        }
+    }
+
+    return exit_code;
 }
