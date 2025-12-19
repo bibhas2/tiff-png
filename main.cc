@@ -8,22 +8,19 @@
 //A type to manage resources and ensure proper cleanup
 struct Resources
 {
-    uint32_t *raster = nullptr;
     FILE *fp = nullptr;
     png_structp png_ptr = nullptr;
     png_infop info_ptr = nullptr;
-    png_bytep row = nullptr;
+    tdata_t row = nullptr;
 
     ~Resources()
     {
         if (row)
-            free(row);
+            _TIFFfree(row);
         if (png_ptr)
             png_destroy_write_struct(&png_ptr, info_ptr ? &info_ptr : (png_infopp)NULL);
         if (fp)
             fclose(fp);
-        if (raster)
-            _TIFFfree(raster);
     }
 };
 
@@ -33,25 +30,28 @@ static void save_tiff_as_png(TIFF *tif, const char *png_filename)
     if (!tif || !png_filename)
         throw std::invalid_argument("Invalid arguments to save_tiff_as_png");
 
-    uint32_t width = 0, height = 0;
+    uint32_t width = 0, height = 0, bps = 0, spp = 0, photometric = 0;
 
-    if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) || !TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height))
-        throw std::invalid_argument("Failed to get image dimensions");
+    if (!TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width) || 
+        !TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height) ||
+        !TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bps) ||
+        !TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &spp) ||
+        !TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric))
+        throw std::invalid_argument("Failed to get image properties from TIFF file");
+
+    // Determine PNG Color Type
+    int png_color_type;
+
+    if (photometric == PHOTOMETRIC_MINISBLACK) {
+        png_color_type = (spp == 2) ? PNG_COLOR_TYPE_GRAY_ALPHA : PNG_COLOR_TYPE_GRAY;
+    } else if (photometric == PHOTOMETRIC_RGB) {
+        png_color_type = (spp == 4) ? PNG_COLOR_TYPE_RGBA : PNG_COLOR_TYPE_RGB;
+    } else {
+        throw std::invalid_argument("Unsupported photometric interpretation\n");
+    }
 
     // Resources to manage
     Resources res{};
-
-    // Allocate raster for RGBA pixels
-    tsize_t npixels = (tsize_t)width * (tsize_t)height;
-
-    res.raster = (uint32_t *)_TIFFmalloc(npixels * sizeof(uint32_t));
-
-    if (!res.raster)
-        throw std::runtime_error("Failed to allocate raster");
-
-    // Read into raster in top-left orientation
-    if (!TIFFReadRGBAImageOriented(tif, width, height, res.raster, ORIENTATION_TOPLEFT, 0))
-        throw std::runtime_error("TIFFReadRGBAImageOriented failed");
 
     // Initialize libpng structures
     res.fp = fopen(png_filename, "wb");
@@ -73,30 +73,33 @@ static void save_tiff_as_png(TIFF *tif, const char *png_filename)
 
     // We will write RGBA 8-bit
     png_set_IHDR(res.png_ptr, res.info_ptr, width, height,
-                 8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                 bps, png_color_type, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+
     png_write_info(res.png_ptr, res.info_ptr);
 
-    // Allocate a single row buffer for RGBA with 1 byte for each color channel
-    res.row = (png_bytep) malloc((size_t)width * 4 * 1);
+    // If it's a 16-bit TIFF, ensure we handle endianness (PNG is big-endian)
+    if (bps == 16) {
+        #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+            //This will cause png_write_row to swap bytes from little-endian to big-endian
+            png_set_swap(res.png_ptr);
+        #endif
+    }
+
+    // Dynamic Buffer: Allocate exactly what a single scanline needs
+    tmsize_t line_size = TIFFScanlineSize(tif);
+    res.row = _TIFFmalloc(line_size);
 
     if (!res.row)
         throw std::runtime_error("Failed to allocate row buffer");
 
-    for (uint32_t y = 0; y < height; ++y)
-    {
-        for (uint32_t x = 0; x < width; ++x)
-        {
-            uint32_t px = res.raster[(size_t)y * width + x];
-
-            // TIFFReadRGBAImage returns data in host byte order as 0xAARRGGBB on most systems.
-            res.row[x * 4 + 0] = (uint8_t)((px >> 16) & 0xFF); // R
-            res.row[x * 4 + 1] = (uint8_t)((px >> 8) & 0xFF);  // G
-            res.row[x * 4 + 2] = (uint8_t)(px & 0xFF);         // B
-            res.row[x * 4 + 3] = (uint8_t)((px >> 24) & 0xFF); // A
-        }
-
-        png_write_row(res.png_ptr, res.row);
+    // Read and Write row by row
+    for (uint32_t row = 0; row < height; row++) {
+        //This will give us the pixel values in machine's endinaness
+        TIFFReadScanline(tif, res.row, row, 0);
+        //We supply the pixel values in machine's endinaness.
+        //png_write_row will convert the values to big endian if necessary
+        png_write_row(res.png_ptr, (png_bytep) res.row);
     }
 
     png_write_end(res.png_ptr, res.info_ptr);
@@ -155,7 +158,7 @@ int main(int argc, char *argv[])
         if (!convert_file(argv[i]))
         {
             std::cerr << "Failed to convert: " << argv[i] << std::endl;
-            
+
             exit_code = 1;
         }
     }
